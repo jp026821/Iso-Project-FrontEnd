@@ -2,8 +2,36 @@ import React, { useEffect, useState } from "react";
 
 const API_BASE = "http://localhost:8080";
 
+const collectAuditItems = (data) => {
+  if (Array.isArray(data)) return data;
+
+  const candidates = [
+    data?.documents,
+    data?.documentUploads,
+    data?.uploadedDocuments,
+    data?.docs,
+    data?.auditDocuments,
+    data?.items,
+    data?.data,
+    data?.content,
+    data?.results,
+    data?.auditDetails,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+
+  if (data && typeof data === "object") return [data];
+
+  return [];
+};
+
 export default function NotificationsSection() {
-  const loginEmail = localStorage.getItem("loginEmail"); // or "email" based on your login
+  const loginEmail =
+    localStorage.getItem("loginEmail") ||
+    localStorage.getItem("email") ||
+    localStorage.getItem("username");
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -25,7 +53,7 @@ export default function NotificationsSection() {
         if (!res.ok) throw new Error("Failed to fetch notifications");
 
         const data = await res.json();
-        setItems(Array.isArray(data) ? data : []);
+        setItems(collectAuditItems(data));
       } catch (e) {
         console.error(e);
         setItems([]);

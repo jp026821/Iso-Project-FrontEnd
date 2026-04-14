@@ -6,6 +6,73 @@ const API_BASE = "http://localhost:8080";
 const norm = (v) => (v == null ? "" : String(v)).trim();
 const lower = (v) => norm(v).toLowerCase();
 
+const pickFirst = (source, keys) => {
+  if (!source || typeof source !== "object") return "";
+
+  for (const key of keys) {
+    const value = source[key];
+    if (value != null && String(value).trim() !== "") return value;
+  }
+
+  return "";
+};
+
+const collectAuditItems = (data) => {
+  if (Array.isArray(data)) return data;
+
+  const candidates = [
+    data?.documents,
+    data?.documentUploads,
+    data?.uploadedDocuments,
+    data?.docs,
+    data?.auditDocuments,
+    data?.files,
+    data?.uploads,
+    data?.documentList,
+    data?.documentDetails,
+    data?.items,
+    data?.data,
+    data?.content,
+    data?.results,
+    data?.auditDetails,
+  ];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+
+  if (data && typeof data === "object") return [data];
+
+  return [];
+};
+
+const normalizeDocuments = (audit) => {
+  const docsSource =
+    pickFirst(audit, ["documents", "documentUploads", "uploadedDocuments", "docs", "auditDocuments", "files", "uploads", "documentList", "documentDetails"]) ||
+    [];
+
+  const docsArray = Array.isArray(docsSource) ? docsSource : Array.isArray(audit) ? audit : [];
+
+  return docsArray
+    .map((doc, index) => {
+      const raw = doc && typeof doc === "object" ? doc : {};
+      const id = pickFirst(raw, ["id", "documentId", "docId", "fileId", "uploadId"]) || index;
+      const docType = pickFirst(raw, ["docType", "documentType", "type", "name", "title"]) || "Document";
+      const fileName = pickFirst(raw, ["fileName", "originalFileName", "name", "filename", "file", "documentName"]) || "-";
+      const status = pickFirst(raw, ["status", "documentStatus", "fileStatus", "approvalStatus", "reviewStatus"]) || pickFirst(audit, ["status", "documentStatus", "approvalStatus"]) || "Pending";
+      const adminComment = pickFirst(raw, ["adminComment", "comment", "remarks", "reason", "rejectionReason"]);
+
+      return {
+        id,
+        docType,
+        fileName,
+        status,
+        adminComment,
+      };
+    })
+    .filter((doc) => doc.id != null);
+};
+
 const chipStyle = (status) => {
   const s = lower(status);
   if (s === "approved")
@@ -16,7 +83,16 @@ const chipStyle = (status) => {
 };
 
 export default function UserNotificationsPage() {
-  const loginEmail = localStorage.getItem("username") || "";
+  const loginEmail =
+    localStorage.getItem("loginEmail") ||
+    localStorage.getItem("email") ||
+    localStorage.getItem("username") ||
+    "";
+  const storedAuditId =
+    localStorage.getItem("currentAuditId") ||
+    localStorage.getItem("adminAuditId") ||
+    localStorage.getItem("lastAuditId") ||
+    "";
 
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
@@ -26,25 +102,43 @@ export default function UserNotificationsPage() {
     try {
       setLoading(true);
 
-      if (!loginEmail) {
+      let auditId = storedAuditId;
+
+      if (!auditId && loginEmail) {
+        const summaryRes = await fetch(
+          `${API_BASE}/api/audit/audit-details/user?loginEmail=${encodeURIComponent(loginEmail)}`
+        );
+
+        if (summaryRes.ok) {
+          const summaryData = await summaryRes.json().catch(() => null);
+          const summaryItem = Array.isArray(summaryData) ? summaryData[0] || null : summaryData;
+          auditId = pickFirst(summaryItem, ["auditId", "id", "requestId", "auditRequestId"]);
+        }
+      }
+
+      if (!auditId) {
         setItems([]);
         return;
       }
 
-      const res = await fetch(
-        `${API_BASE}/api/audit/audit-details/user?loginEmail=${encodeURIComponent(loginEmail)}`
-      );
+      const docsRes = await fetch(`${API_BASE}/api/${auditId}/documents`);
 
-      if (!res.ok) {
-        const t = await res.text().catch(() => "");
-        console.error("Audit API failed:", res.status, t);
+      if (!docsRes.ok) {
+        const t = await docsRes.text().catch(() => "");
+        console.error("Documents API failed:", docsRes.status, t);
         setItems([]);
         return;
       }
 
-      const data = await res.json().catch(() => []);
-      const audits = Array.isArray(data) ? data : [];
-      setItems(audits);
+      const docsData = await docsRes.json().catch(() => []);
+      const docs = Array.isArray(docsData) ? docsData : [];
+
+      setItems([
+        {
+          auditId,
+          documents: docs,
+        },
+      ]);
     } catch (e) {
       console.error("Notifications fetch error:", e);
       setItems([]);
@@ -98,22 +192,17 @@ export default function UserNotificationsPage() {
       {loading ? (
         <div className="no-results">Loading notifications...</div>
       ) : items.length === 0 ? (
-        <div className="no-results">No audits found.</div>
+        <div className="no-results">No document uploads found yet.</div>
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           {items.map((n) => {
-            const auditId = n.auditId; // ✅ from your JSON
-            const docsRaw = Array.isArray(n.documents) ? n.documents : [];
-
-            const docs = docsRaw
-              .map((d) => ({
-                id: d.id,
-                fileName: d.fileName || "-",
-                docType: d.docType || "Document",
-                status: norm(d.status) || "Pending",
-                adminComment: d.adminComment || "",
-              }))
-              .filter((x) => x.id != null);
+            const auditId =
+              pickFirst(n, ["auditId", "id", "requestId", "auditRequestId"]) ||
+              `audit-${items.indexOf(n)}`;
+            const docs = Array.isArray(n.documents) ? n.documents : [];
+            const auditStatus = docs.length
+              ? pickFirst(docs[0], ["status", "documentStatus", "fileStatus", "approvalStatus", "reviewStatus"]) || "Pending"
+              : "Pending";
 
             return (
               <div
@@ -128,10 +217,7 @@ export default function UserNotificationsPage() {
                 {/* ===== Audit Header ===== */}
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 900 }}>
-                    {n.auditType || "Audit Request"}
-                    {n.preferredDate ? (
-                      <span style={{ opacity: 0.8, fontWeight: 600 }}> • {n.preferredDate}</span>
-                    ) : null}
+                    Audit Documents
                   </div>
 
                   <span
@@ -140,22 +226,18 @@ export default function UserNotificationsPage() {
                       borderRadius: 999,
                       fontWeight: 800,
                       fontSize: 12,
-                      ...chipStyle(n.status),
+                      ...chipStyle(auditStatus),
                     }}
                   >
-                    {n.status || "Pending"}
+                    {auditStatus}
                   </span>
                 </div>
 
                 <div style={{ marginTop: 10, fontSize: 13, opacity: 0.9, display: "grid", gap: 4 }}>
                   <div><b>Audit ID:</b> {auditId}</div>
-                  <div><b>Location:</b> {n.auditLocation || "-"}</div>
-                  <div><b>Duration:</b> {n.duration || "-"}</div>
                   <div>
-                    <b>ISO:</b>{" "}
-                    {Array.isArray(n.isoStandards) ? n.isoStandards.join(", ") : n.isoStandards || "-"}
+                    <b>Documents:</b> {docs.length}
                   </div>
-                  {n.adminComment ? <div><b>Audit Comment:</b> {n.adminComment}</div> : null}
                 </div>
 
                 {/* ===== Documents ===== */}
@@ -163,15 +245,20 @@ export default function UserNotificationsPage() {
                   <div style={{ fontWeight: 900, marginBottom: 8 }}>Documents</div>
 
                   {docs.length === 0 ? (
-                    <div style={{ opacity: 0.85 }}>No documents uploaded yet.</div>
+                    <div style={{ opacity: 0.85 }}>No document uploads found yet.</div>
                   ) : (
                     <div style={{ display: "grid", gap: 8 }}>
                       {docs.map((doc) => {
-                        const s = lower(doc.status);
+                        const docId = pickFirst(doc, ["id", "documentId", "docId", "fileId", "uploadId"]);
+                        const fileName = pickFirst(doc, ["originalFileName", "fileName", "name", "filename", "documentName"]) || "-";
+                        const docType = pickFirst(doc, ["fileType", "docType", "documentType", "type", "title"]) || "Document";
+                        const status = pickFirst(doc, ["status", "documentStatus", "fileStatus", "approvalStatus", "reviewStatus"]) || "Pending";
+                        const adminComment = pickFirst(doc, ["adminComment", "comment", "remarks", "reason", "rejectionReason"]);
+                        const s = lower(status);
 
                         return (
                           <div
-                            key={doc.id}
+                            key={docId || `${auditId}-${fileName}-${docType}`}
                             style={{
                               padding: "10px 12px",
                               borderRadius: 12,
@@ -195,12 +282,12 @@ export default function UserNotificationsPage() {
                             }}
                           >
                             <div>
-                              <div style={{ fontWeight: 900 }}>{doc.docType}</div>
-                              <div style={{ fontSize: 12, opacity: 0.8 }}>{doc.fileName}</div>
+                              <div style={{ fontWeight: 900 }}>{docType}</div>
+                              <div style={{ fontSize: 12, opacity: 0.8 }}>{fileName}</div>
 
-                              {s === "rejected" && doc.adminComment ? (
+                              {s === "rejected" && adminComment ? (
                                 <div style={{ marginTop: 6, fontSize: 12, color: "#ff6b6b", fontWeight: 800 }}>
-                                  Reason: {doc.adminComment}
+                                  Reason: {adminComment}
                                 </div>
                               ) : null}
                             </div>
@@ -212,32 +299,32 @@ export default function UserNotificationsPage() {
                                   borderRadius: 999,
                                   fontWeight: 900,
                                   fontSize: 12,
-                                  ...chipStyle(doc.status),
+                                  ...chipStyle(status),
                                 }}
                               >
-                                {doc.status}
+                                {status}
                               </span>
 
                               {s === "rejected" ? (
                                 <label
                                   style={{
-                                    cursor: reUploading[doc.id] ? "not-allowed" : "pointer",
+                                    cursor: reUploading[docId] ? "not-allowed" : "pointer",
                                     padding: "8px 12px",
                                     borderRadius: 10,
                                     border: "1px solid rgba(239,68,68,0.45)",
                                     background: "rgba(239,68,68,0.12)",
                                     fontWeight: 900,
-                                    opacity: reUploading[doc.id] ? 0.6 : 1,
+                                    opacity: reUploading[docId] ? 0.6 : 1,
                                   }}
                                 >
-                                  {reUploading[doc.id] ? "Uploading..." : "Re-upload"}
+                                  {reUploading[docId] ? "Uploading..." : "Re-upload"}
                                   <input
                                     type="file"
                                     style={{ display: "none" }}
-                                    disabled={reUploading[doc.id]}
+                                    disabled={reUploading[docId]}
                                     onChange={(e) => {
                                       const f = e.target.files?.[0];
-                                      if (f) handleReUpload(auditId, doc.id, f);
+                                      if (f && docId != null) handleReUpload(auditId, docId, f);
                                       e.target.value = "";
                                     }}
                                   />
