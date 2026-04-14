@@ -21,20 +21,12 @@ const collectAuditItems = (data) => {
   if (Array.isArray(data)) return data;
 
   const candidates = [
-    data?.documents,
-    data?.documentUploads,
-    data?.uploadedDocuments,
-    data?.docs,
-    data?.auditDocuments,
-    data?.files,
-    data?.uploads,
-    data?.documentList,
-    data?.documentDetails,
+    data?.audits,
+    data?.auditDetails,
     data?.items,
     data?.data,
     data?.content,
     data?.results,
-    data?.auditDetails,
   ];
 
   for (const candidate of candidates) {
@@ -46,31 +38,12 @@ const collectAuditItems = (data) => {
   return [];
 };
 
-const normalizeDocuments = (audit) => {
-  const docsSource =
-    pickFirst(audit, ["documents", "documentUploads", "uploadedDocuments", "docs", "auditDocuments", "files", "uploads", "documentList", "documentDetails"]) ||
-    [];
+const addYears = (dateInput, years) => {
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) return "";
 
-  const docsArray = Array.isArray(docsSource) ? docsSource : Array.isArray(audit) ? audit : [];
-
-  return docsArray
-    .map((doc, index) => {
-      const raw = doc && typeof doc === "object" ? doc : {};
-      const id = pickFirst(raw, ["id", "documentId", "docId", "fileId", "uploadId"]) || index;
-      const docType = pickFirst(raw, ["docType", "documentType", "type", "name", "title"]) || "Document";
-      const fileName = pickFirst(raw, ["fileName", "originalFileName", "name", "filename", "file", "documentName"]) || "-";
-      const status = pickFirst(raw, ["status", "documentStatus", "fileStatus", "approvalStatus", "reviewStatus"]) || pickFirst(audit, ["status", "documentStatus", "approvalStatus"]) || "Pending";
-      const adminComment = pickFirst(raw, ["adminComment", "comment", "remarks", "reason", "rejectionReason"]);
-
-      return {
-        id,
-        docType,
-        fileName,
-        status,
-        adminComment,
-      };
-    })
-    .filter((doc) => doc.id != null);
+  date.setFullYear(date.getFullYear() + years);
+  return date.toISOString().slice(0, 10);
 };
 
 const chipStyle = (status) => {
@@ -88,15 +61,14 @@ export default function UserNotificationsPage() {
     localStorage.getItem("email") ||
     localStorage.getItem("username") ||
     "";
-  const storedAuditId =
-    localStorage.getItem("currentAuditId") ||
+  const storedAuditId = localStorage.getItem("currentAuditId") ||
     localStorage.getItem("adminAuditId") ||
-    localStorage.getItem("lastAuditId") ||
-    "";
+    localStorage.getItem("lastAuditId") || "";
 
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState([]);
   const [reUploading, setReUploading] = useState({});
+  const [downloadingCert, setDownloadingCert] = useState({});
 
   const fetchNotifications = useCallback(async () => {
     try {
@@ -116,29 +88,46 @@ export default function UserNotificationsPage() {
         }
       }
 
-      if (!auditId) {
+      if (!loginEmail) {
         setItems([]);
         return;
       }
 
-      const docsRes = await fetch(`${API_BASE}/api/${auditId}/documents`);
+      const summaryRes = await fetch(
+        `${API_BASE}/api/audit/audit-details/user?loginEmail=${encodeURIComponent(loginEmail)}`
+      );
 
-      if (!docsRes.ok) {
-        const t = await docsRes.text().catch(() => "");
-        console.error("Documents API failed:", docsRes.status, t);
+      if (!summaryRes.ok) {
+        const t = await summaryRes.text().catch(() => "");
+        console.error("Audit summary API failed:", summaryRes.status, t);
         setItems([]);
         return;
       }
 
-      const docsData = await docsRes.json().catch(() => []);
-      const docs = Array.isArray(docsData) ? docsData : [];
+      const summaryData = await summaryRes.json().catch(() => null);
+      const audits = collectAuditItems(summaryData)
+        .map((audit) => ({
+          ...audit,
+          auditId: pickFirst(audit, ["auditId", "id", "requestId", "auditRequestId"]),
+        }))
+        .filter((audit) => audit.auditId);
 
-      setItems([
-        {
-          auditId,
-          documents: docs,
-        },
-      ]);
+      const auditCards = await Promise.all(
+        audits.map(async (audit) => {
+          try {
+            const docsRes = await fetch(`${API_BASE}/api/${audit.auditId}/documents`);
+            const docsData = docsRes.ok ? await docsRes.json().catch(() => []) : [];
+            const documents = Array.isArray(docsData) ? docsData : [];
+
+            return { ...audit, documents };
+          } catch (error) {
+            console.error(`Documents fetch failed for audit ${audit.auditId}:`, error);
+            return { ...audit, documents: [] };
+          }
+        })
+      );
+
+      setItems(auditCards);
     } catch (e) {
       console.error("Notifications fetch error:", e);
       setItems([]);
@@ -176,6 +165,91 @@ export default function UserNotificationsPage() {
     }
   };
 
+  const handleCreateAuditAgain = () => {
+    localStorage.setItem("openTab", "audit");
+    localStorage.removeItem("currentAuditId");
+    localStorage.removeItem("lastAuditId");
+    window.location.assign("/user");
+  };
+
+  const handleDownloadCertificate = async (auditId) => {
+    if (!auditId) return;
+
+    setDownloadingCert((prev) => ({ ...prev, [auditId]: true }));
+    try {
+      const audit = items.find((item) => String(pickFirst(item, ["auditId", "id", "requestId", "auditRequestId"])) === String(auditId)) || {};
+      const storedOrg = JSON.parse(localStorage.getItem("orgData") || "{}");
+      const companyName =
+        pickFirst(audit, ["companyName", "organizationName", "clientName", "company", "name"]) ||
+        storedOrg.company ||
+        "";
+      const isoStandard =
+        pickFirst(audit, ["isoStandard", "isoStandardCode", "isoCode"]) ||
+        (Array.isArray(audit.isoStandards) ? audit.isoStandards.join(", ") : "");
+      const issueDate =
+        pickFirst(audit, ["issueDate", "completedAt", "completedDate", "approvedAt", "updatedAt", "createdAt", "preferredDate"]) ||
+        new Date().toISOString().slice(0, 10);
+      const expiryDate =
+        pickFirst(audit, ["expiryDate", "expiresAt", "validUntil", "validTo"]) ||
+        addYears(issueDate, 3) ||
+        "";
+      const auditorName =
+        pickFirst(audit, ["auditorName", "assignedAuditor", "auditor", "reviewerName"]) ||
+        localStorage.getItem("email") ||
+        localStorage.getItem("username") ||
+        "";
+
+      const params = new URLSearchParams({
+        companyName,
+        isoStandard,
+        issueDate,
+        expiryDate,
+        auditorName,
+      });
+
+      const candidateUrls = [
+        `${API_BASE}/api/audit/${auditId}/certificate`,
+        `${API_BASE}/api/certificate/download?${params.toString()}`,
+      ];
+
+      let res = null;
+      let failureMessage = "";
+
+      for (const url of candidateUrls) {
+        const attempt = await fetch(url);
+        if (attempt.ok) {
+          res = attempt;
+          break;
+        }
+
+        const message = await attempt.text().catch(() => "");
+        failureMessage = message || `Certificate endpoint failed (${attempt.status})`;
+      }
+
+      if (!res) {
+        throw new Error(failureMessage || "Certificate not available yet");
+      }
+
+      const blob = await res.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const contentDisposition = res.headers.get("content-disposition") || "";
+      const filenameMatch = contentDisposition.match(/filename=\"?([^\";]+)\"?/i);
+      const filename = filenameMatch?.[1] || `certificate_${auditId}.pdf`;
+
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (e) {
+      alert(e?.message || "Failed to download certificate");
+    } finally {
+      setDownloadingCert((prev) => ({ ...prev, [auditId]: false }));
+    }
+  };
+
   return (
     <div className="products-wrap">
       <div className="products-header">
@@ -200,9 +274,14 @@ export default function UserNotificationsPage() {
               pickFirst(n, ["auditId", "id", "requestId", "auditRequestId"]) ||
               `audit-${items.indexOf(n)}`;
             const docs = Array.isArray(n.documents) ? n.documents : [];
-            const auditStatus = docs.length
-              ? pickFirst(docs[0], ["status", "documentStatus", "fileStatus", "approvalStatus", "reviewStatus"]) || "Pending"
-              : "Pending";
+            const auditComment = pickFirst(n, ["adminComment", "comment", "remarks", "reason", "rejectionReason"]);
+            const statuses = [...new Set(
+              docs
+                .map((doc) => pickFirst(doc, ["status", "documentStatus", "fileStatus", "approvalStatus", "reviewStatus"]) || "Pending")
+                .filter(Boolean)
+            )];
+            const headerStatus = pickFirst(n, ["status", "auditStatus", "documentStatus", "approvalStatus"]) ||
+              (statuses.length > 1 ? "Multiple Statuses" : statuses[0] || "Pending");
 
             return (
               <div
@@ -217,20 +296,60 @@ export default function UserNotificationsPage() {
                 {/* ===== Audit Header ===== */}
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ fontWeight: 900 }}>
-                    Audit Documents
+                    {pickFirst(n, ["auditType", "auditName", "type", "title"]) || "Audit Documents"}
                   </div>
 
-                  <span
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: 999,
-                      fontWeight: 800,
-                      fontSize: 12,
-                      ...chipStyle(auditStatus),
-                    }}
-                  >
-                    {auditStatus}
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span
+                      style={{
+                        padding: "6px 12px",
+                        borderRadius: 999,
+                        fontWeight: 800,
+                        fontSize: 12,
+                        ...chipStyle(headerStatus),
+                      }}
+                    >
+                      {headerStatus}
+                    </span>
+
+                    {lower(headerStatus) === "rejected" ? (
+                      <button
+                        type="button"
+                        onClick={handleCreateAuditAgain}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(239,68,68,0.45)",
+                          background: "rgba(239,68,68,0.12)",
+                          color: "#fff",
+                          fontWeight: 800,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Create Audit Again
+                      </button>
+                    ) : null}
+
+                    {lower(headerStatus) === "completed" ? (
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadCertificate(auditId)}
+                        disabled={downloadingCert[auditId]}
+                        style={{
+                          padding: "8px 12px",
+                          borderRadius: 10,
+                          border: "1px solid rgba(34,197,94,0.45)",
+                          background: "rgba(34,197,94,0.12)",
+                          color: "#fff",
+                          fontWeight: 800,
+                          cursor: downloadingCert[auditId] ? "not-allowed" : "pointer",
+                          opacity: downloadingCert[auditId] ? 0.7 : 1,
+                        }}
+                      >
+                        {downloadingCert[auditId] ? "Downloading..." : "Download Audit Certificate"}
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div style={{ marginTop: 10, fontSize: 13, opacity: 0.9, display: "grid", gap: 4 }}>
@@ -238,6 +357,32 @@ export default function UserNotificationsPage() {
                   <div>
                     <b>Documents:</b> {docs.length}
                   </div>
+                  <div>
+                    <b>Audit Status:</b> {headerStatus}
+                  </div>
+                  {auditComment ? (
+                    <div>
+                      <b>Admin Comment:</b> {auditComment}
+                    </div>
+                  ) : null}
+                  {statuses.length > 0 ? (
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                      {statuses.map((status) => (
+                        <span
+                          key={`${auditId}-${status}`}
+                          style={{
+                            padding: "4px 10px",
+                            borderRadius: 999,
+                            fontWeight: 800,
+                            fontSize: 11,
+                            ...chipStyle(status),
+                          }}
+                        >
+                          {status}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
 
                 {/* ===== Documents ===== */}
@@ -285,9 +430,9 @@ export default function UserNotificationsPage() {
                               <div style={{ fontWeight: 900 }}>{docType}</div>
                               <div style={{ fontSize: 12, opacity: 0.8 }}>{fileName}</div>
 
-                              {s === "rejected" && adminComment ? (
+                              {adminComment ? (
                                 <div style={{ marginTop: 6, fontSize: 12, color: "#ff6b6b", fontWeight: 800 }}>
-                                  Reason: {adminComment}
+                                  Admin Comment: {adminComment}
                                 </div>
                               ) : null}
                             </div>

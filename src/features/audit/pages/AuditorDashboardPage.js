@@ -4,6 +4,21 @@ import "./AuditorDashboard.css";
 
 const API_BASE = "http://localhost:8080/api";
 
+const normalizeStatus = (value) => {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, "_");
+
+  if (raw === "all") return "ALL";
+  if (raw === "assigned") return "ASSIGNED";
+  if (raw === "in_progress") return "IN_PROGRESS";
+  if (raw === "correction_required" || raw === "need_correction") return "NEED_CORRECTION";
+  if (raw === "completed") return "COMPLETED";
+
+  return raw.toUpperCase();
+};
+
 export default function AuditorDashboard() {
   const navigate = useNavigate();
   const auditorEmail = localStorage.getItem("email") || "";
@@ -294,9 +309,7 @@ export default function AuditorDashboard() {
     let list = Array.isArray(audits) ? [...audits] : [];
 
     if (statusFilter !== "ALL") {
-      list = list.filter(
-        (item) => (item.status || "").toLowerCase() === statusFilter.toLowerCase()
-      );
+      list = list.filter((item) => normalizeStatus(item.status) === statusFilter);
     }
 
     if (searchText.trim()) {
@@ -316,16 +329,27 @@ export default function AuditorDashboard() {
   }, [audits, searchText, statusFilter]);
 
   const stats = useMemo(() => {
+    const byStatus = (key) => audits.filter((a) => normalizeStatus(a.status) === key).length;
+
     return {
       total: audits.length,
-      assigned: audits.filter((a) => (a.status || "").toLowerCase() === "assigned").length,
-      inProgress: audits.filter((a) => (a.status || "").toLowerCase() === "In_Progress").length,
-      correctionRequired: audits.filter(
-        (a) => (a.status || "").toLowerCase() === "correction required"
-      ).length,
-      completed: audits.filter((a) => (a.status || "").toLowerCase() === "completed").length,
+      assigned: byStatus("ASSIGNED"),
+      inProgress: byStatus("IN_PROGRESS"),
+      correctionRequired: byStatus("NEED_CORRECTION"),
+      completed: byStatus("COMPLETED"),
     };
   }, [audits]);
+
+  const statusButtons = useMemo(
+    () => [
+      { key: "ALL", label: "Total Audits", count: stats.total },
+      { key: "ASSIGNED", label: "Assigned", count: stats.assigned },
+      { key: "IN_PROGRESS", label: "In_Progress", count: stats.inProgress },
+      { key: "NEED_CORRECTION", label: "Need Correction", count: stats.correctionRequired },
+      { key: "COMPLETED", label: "Completed", count: stats.completed },
+    ],
+    [stats]
+  );
 
   useEffect(() => {
     fetchAssignedAudits();
@@ -381,26 +405,17 @@ export default function AuditorDashboard() {
         {error && <div className="alert error">{error}</div>}
 
         <div className="top-cards">
-          <div className="top-card">
-            <h4>Total Audits</h4>
-            <p>{stats.total}</p>
-          </div>
-          <div className="top-card">
-            <h4>Assigned</h4>
-            <p>{stats.assigned}</p>
-          </div>
-          <div className="top-card">
-            <h4>In_Progress</h4>
-            <p>{stats.inProgress}</p>
-          </div>
-          <div className="top-card">
-            <h4>Need Correction</h4>
-            <p>{stats.correctionRequired}</p>
-          </div>
-          <div className="top-card">
-            <h4>Completed</h4>
-            <p>{stats.completed}</p>
-          </div>
+          {statusButtons.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`top-card stat-filter-btn ${statusFilter === item.key ? "active" : ""}`}
+              onClick={() => setStatusFilter(item.key)}
+            >
+              <h4>{item.label}</h4>
+              <p>{item.count}</p>
+            </button>
+          ))}
         </div>
 
         <div className="filters">
@@ -410,17 +425,6 @@ export default function AuditorDashboard() {
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
           />
-
-          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="ALL">All Status</option>
-            <option value="Assigned">Assigned</option>
-            <option value="In_Progress">In_Progress</option>
-            <option value="Correction Required">Correction Required</option>
-            <option value="Resubmitted">Resubmitted</option>
-            <option value="Final Audit">Final Audit</option>
-            <option value="Completed">Completed</option>
-            <option value="Rejected">Rejected</option>
-          </select>
         </div>
 
         <div className="content-grid">

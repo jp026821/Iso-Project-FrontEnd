@@ -98,7 +98,7 @@ export default function UserManagementPage() {
       roleid: Number(editing.roleid),
     };
 
-    const url = `http://localhost:8080/api/employees/${editing.id}`;
+    const url = `${API}/update/${editing.id}`;
 
     console.log("PUT URL:", url);
     console.log("Payload:", payload);

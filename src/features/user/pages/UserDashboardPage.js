@@ -123,7 +123,7 @@ const UserDashboard = () => {
 const ProfileSection = ({ onProfileSaved }) => {
   const [openAddress, setOpenAddress] = useState(true);
   const [loading, setLoading] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditing, setIsEditing] = useState(true);
 
   const countries = useMemo(() => ["Select", "India", "USA", "UK", "Canada"], []);
   const industries = useMemo(
@@ -161,7 +161,15 @@ const ProfileSection = ({ onProfileSaved }) => {
 
   const onProfileChange = (e) => {
     const { name, value } = e.target;
-    setProfile((p) => ({ ...p, [name]: value }));
+    setProfile((p) => {
+      const next = { ...p, [name]: value };
+
+      if (name === "firstName" || name === "lastName") {
+        next.displayName = `${next.firstName || ""} ${next.lastName || ""}`.trim();
+      }
+
+      return next;
+    });
   };
 
   const onOrgChange = (e) => {
@@ -227,7 +235,6 @@ const ProfileSection = ({ onProfileSaved }) => {
       }
 
       alert(msg || "Profile updated successfully ✅");
-      setIsEditing(false);
       setBackup(null);
 
       localStorage.setItem("profileData", JSON.stringify(profile));
@@ -243,21 +250,7 @@ const ProfileSection = ({ onProfileSaved }) => {
     }
   };
 
-  const startEdit = () => {
-    setBackup({ profile: { ...profile }, organization: { ...organization } });
-    setIsEditing(true);
-  };
-
-  const cancelEdit = () => {
-    if (backup) {
-      setProfile(backup.profile);
-      setOrganization(backup.organization);
-    }
-    setIsEditing(false);
-    setBackup(null);
-  };
-
-  const disabled = !isEditing || loading;
+  const disabled = loading;
 
   return (
     <div className="profile-page">
@@ -267,30 +260,14 @@ const ProfileSection = ({ onProfileSaved }) => {
           <div className="page-hint">{loading ? "Loading profile..." : "View your profile details"}</div>
         </div>
         <div className="profile-actions">
-          {!isEditing ? (
-            <button type="button" className="edit-profile-btn" onClick={startEdit}>
-              ✏️ Edit Profile
-            </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="cancel-profile-btn"
-                onClick={cancelEdit}
-                disabled={loading}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                form="profileForm"
-                className="update-profile-btn"
-                disabled={loading}
-              >
-                {loading ? "Updating..." : "Update Profile"}
-              </button>
-            </>
-          )}
+          <button
+            type="submit"
+            form="profileForm"
+            className="update-profile-btn"
+            disabled={loading}
+          >
+            {loading ? "Updating..." : "Update Profile"}
+          </button>
         </div>
       </div>
 
@@ -320,12 +297,11 @@ const ProfileSection = ({ onProfileSaved }) => {
                     disabled={disabled}
                   />
                 </Row>
-                <Row label="Display name" required>
+                <Row label="Display name">
                   <input
                     name="displayName"
                     value={profile.displayName}
                     onChange={onProfileChange}
-                    required
                     disabled={disabled}
                   />
                 </Row>
@@ -493,16 +469,14 @@ const ProfileSection = ({ onProfileSaved }) => {
           )}
         </section>
 
-        {isEditing && (
-          <div className="actions">
-            <button className="save" type="submit" disabled={loading}>
-              {loading ? "Updating..." : "Update Profile"}
-            </button>
-            <div className="req-note">
-              <span className="req">*</span> required field
-            </div>
+        <div className="actions">
+          <button className="save" type="submit" disabled={loading}>
+            {loading ? "Updating..." : "Update Profile"}
+          </button>
+          <div className="req-note">
+            <span className="req">*</span> required field
           </div>
-        )}
+        </div>
       </form>
     </div>
   );
